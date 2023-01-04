@@ -2,6 +2,8 @@
 
 from machine import Pin, PWM
 import utime
+import json
+
 
 class ServoDriver:
     def __init__(self, max_channels: int = 4):
@@ -67,20 +69,6 @@ class ServoDriver:
 
         self.zero_all()
 
-        ## TODO Start the real time loop as a task on second CPU core if active is true.
-
-    def update_loop(self):
-        """updates all PWM values, loop runs forever, obviously in a task"""
-
-        ## TODO This will have to run as a task on the second CPU core
-        while True:
-
-            ## TODO get lock
-            if self.active == True:
-                self.advance()
-                ## TODO release lock
-            utime.sleep_ms (self.update_period_ms)
-
     def advance(self):
         """set the PWM values based of rad_rate and elapsed time"""
         if self.active and (self.rad_target_timestamp_ms is not None):
@@ -118,28 +106,21 @@ class ServoDriver:
 
 
     def start(self):
-        ## TODO get lock
-        self.ns_last = [0.0 for i in range(self.max_channels)]
         self.active = True
-        ## TODO release lock
 
     def stop(self):
-        ## TODO get lock
         self.active = False
-        ## TODO release lock
 
-    def zero_all(selfself):
-        """Set the PWM vale for all servos to zero"""
-        for chan in range(self.max_channels)
+    def zero_all(self):
+        """Set the PWM value for all servos to zero"""
+        for chan in range(self.max_channels):
             self.pwms[chan].duty_ns(0)
 
     def set_angles(self, angles):
 
         if self.active:
-            ## TODO get lock
             for chan in range(self.max_channels):
                 self.rad_target = angles
-            ## TODO release lock
         else:
             self.rad_target = angles
             self.update_once(angles)
@@ -163,3 +144,16 @@ class ServoDriver:
     def set_channel_active(self, act):
 
         self.channel_active = act
+
+    def dump_all(self) -> str:
+
+        return json.dumps( {"target angles":    self.rad_target,
+                            "last us":          self.us_last,
+                            "slope":            self.cal_slope,
+                            "intercept":        self.cal_intercept,
+                            "rate":             self.rad_rate,
+                            "channel enabled":  self.channel_active,
+                            "us limit max":     self.us_max,
+                            "us limit min":     self.us_min,
+                            "anvancing":        self.active
+                            })

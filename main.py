@@ -1,6 +1,35 @@
-# Servo Controller to run in a microcontroller
+"""
+Servo Controller to run in a microcontroller
+
+
+Design Notes.
+
+There are two tasks that each run on their own core and execute independently.
+Micropython in RP2040 does not have a global lock and allows true multitasking
+with a task per core.
+
+Task 0.
+This is the initial task after Micropython boots.  It does the following:
+1.  initialization and setup
+2.  create the second task
+3.  Runs a command processing loop that can block while waiting for input
+    on the serial interface the connects to the Linux computer.  The loop
+    reads one "line" from the interface, looks at the command inside then
+    cas the proper function to process that command.   Commands include thins
+    like setting the angle of the servos or setting calibration numbers.
+
+Task 1.
+This task does several operations that can not block.
+1.  If enabled, move the servos at a specified rate.  This allows the servos
+    to move smoothly without sonstant input from te Linux computer
+2.  Blink the onboard LED
+3.  In future revisions...?
+
+"""
 
 import micropython
+import _thread
+import gc
 from machine import Pin
 import utime
 import json
@@ -25,10 +54,15 @@ micropython.alloc_emergency_exception_buf(100)
 # global instance of servo driver
 sd = servo_driver.ServoDriver()
 
+data_lock = _thread.allocate_lock()
+
+led = Pin(25, Pin.OUT)
+
+
 def get_next_command():
     """returns a full command or None"""
 
-    # TODO Ths needs to come over a different interface
+    # TODO Ths needs to come over a different interface such as UART, or SPI
     line = input('$$$')
     try:
         command = json.loads(line)
@@ -54,6 +88,9 @@ def exec_command(command):
 
     global version_id
     global sd
+    global data_lock
+    global cpu_total_us
+    global cpu_num_cycles
 
     op = command[0]
 
@@ -61,34 +98,50 @@ def exec_command(command):
         pass
 
     elif op == 'angle':
-        sd.set_angles(command[1])
+        with data_lock:
+            sd.set_angles(command[1])
 
     elif op == 'rate':
-        sd.set_rate(command[1])
+        with data_lock:
+            sd.set_rate(command[1])
 
     elif op == 'cal':
-        sd.set_calibration(command[1], command[2])
+        with data_lock:
+            sd.set_calibration(command[1], command[2])
 
-    elif op == 'cal':
-        sd.set_us_limits(command[1], command[2])
+    elif op == 'limit':
+        with data_lock:
+            sd.set_us_limits(command[1], command[2])
 
     elif op == 'channel_active':
-        sd.set_channel_active(command[1])
+        with data_lock:
+            sd.set_channel_active(command[1])
 
     elif op == 'start':
-        sd.start()
+        with data_lock:
+            sd.start()
 
     elif op == 'stop':
-        sd.stop()
+        with data_lock:
+            sd.stop()
 
     elif op == 'zero':
-        sd.zero_all()
+        with data_lock:
+            sd.zero_all()
 
     elif op == 'echo':
         print('>>>' + str(command) + '<<<')
 
     elif op == "ID":
         print(version_id)
+
+    elif op == "dump":
+        with data_lock:
+            print(sd.dump_all())
+
+    elif op == "cpu":
+        print("loop uSec", cpu_total_us / cpu_num_cycles)
+        print("mem free ", gc.mem_free())
 
     else:
         pass
@@ -104,52 +157,90 @@ def past_ms(tickval_ms) -> bool:
         return False
 
 
-def main():
-    """ Entry point to servo controller. """
-
-    led = Pin(25, Pin.OUT)
-    command_poll_period = micropython.const(10)     # ms
-    heartbeat_period    = micropython.const(2000)   # ms
+# CPU utilization tracking, task1
+cpu_total_us = 0
+cpu_num_cycles = 0
 
 
+def task1():
+    """Advances the servos at given rate and otheR non-blocking actions"""
+
+    global sd
+    global data_lock
+    global led
+    global cpu_total_us
+    global cpu_num_cycles
+
+
+
+    heartbeat_period        = micropython.const(2000)   # ms
+    heartbeat_on_ms         = micropython.const( 400)   # ms
+    servo_advance_period    = micropython.const(  50)   # ms
 
     # init to 1ms in the past.
-    heartbeat_next = utime.ticks_add(utime.ticks_ms(), -1)
-    heartbeat_off  = utime.ticks_add(utime.ticks_ms(),  1)
-
-    # Fash LED fast for "wakeup"
-    for i in range(3):
-        led.on()
-        utime.sleep_ms(400)
-        led.off()
-        utime.sleep_ms(600)
-
-    # TODO TEST ONLY REMOVE LATER
-    advance_next = utime.ticks_ms()
+    servo_advance_next  = utime.ticks_add(utime.ticks_ms(), -1)
+    heartbeat_next      = utime.ticks_add(utime.ticks_ms(), -1)
+    heartbeat_off       = utime.ticks_add(utime.ticks_ms(),  1)
 
     while True:
+        start_loop = utime.ticks_us()
 
         if past_ms(heartbeat_next):
             led.on()
             heartbeat_next = utime.ticks_add(heartbeat_next,
                                              heartbeat_period)
             heartbeat_off  = utime.ticks_add(utime.ticks_ms(),
-                                             1000)
+                                             heartbeat_on_ms)
         if past_ms(heartbeat_off):
             led.off()
 
-        # TODO TEST ONLY REMOVE LATER
-        if past_ms(advance_next):
-            sd.advance()
-            advance_next = utime.ticks_add(utime.ticks_ms(),
-                                           1000)
+        if past_ms(servo_advance_next):
+
+            # If this attempt to get the lock fail, it will
+            # be retried on the next time around the loop.
+            with data_lock:
+                sd.advance()
+            servo_advance_next = utime.ticks_add(utime.ticks_ms(),
+                                                 servo_advance_period)
+
+        # gc.collect() this takes 5 microseconds
+        # TODO place call to WDT.feed() here
+        cpu_total_us   += utime.ticks_diff(utime.ticks_us(), start_loop)
+        cpu_num_cycles += 1
+        utime.sleep_ms(5)
+
+
+def task0():
+    """Read and process commands from serial data link"""
+
+    command_poll_period = micropython.const(5)  # ms
+
+    while True:
 
         command = get_next_command()
         if command is not None:
             exec_command(command)
 
-        # TODO place call to WDT.feed() here
+        # gc.collect() takes too long to run, perhaps move it
         utime.sleep_ms(command_poll_period)
+
+def main():
+    """Entry point for servo controller"""
+
+    global led
+
+    # Fash LED fast for "wakeup"
+    for i in range(5):
+        led.on()
+        utime.sleep_ms(100)
+        led.off()
+        utime.sleep_ms(400)
+
+    # Start the Second thread.
+    _thread.start_new_thread(task1, ())
+
+    # Run task0 i the current thread
+    task0()
 
 
 main()

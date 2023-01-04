@@ -1,6 +1,6 @@
 # Servo Controller
 This controller runs on a Raspberry Pi Pico microcontroller.
-The Pico may optionally be soldered to a main PCB that facilitate
+The Pico may optionally be soldered to a main PCB that facilitates
 interconnects with up to 16 RC servos, 2 power supplies and a
 computer.
 
@@ -16,6 +16,13 @@ and inaccuracies in the installation of the servo.
 The users can also set soft limits
 for joint angles.  This data is stored in a calibrations file.
 
+In addition to setting the position the user can set a rate
+in radians per second.  The servo's position will be updated
+so as to make it move at the specified rate.  
+It will continue to move untill it either hits a soft limit or
+the rate and postion is updated.    
+The default rate is zero.
+
 This servo controller can store the data from the calibration file
 and apply it in real time.  So the Linux computer sends the desired
 angles in radians in the joints frame to the Pico that in turns
@@ -27,17 +34,11 @@ the PCA9685 board and does several things better:
 1) The PWM pulses are much more accurate.
 1) An angular rate can be specified so the robot joint can move 
 independently of position updates from the Linux computer
-2) The PCA9685 uses I2C while the Pico has I2C and also
+2) The PCA9685 uses I2C while the Pico has
 a few other options to connect with the Linux PC
 
 
 ### Future Work
-The preliminary version of this controller does not
-accept joint angle rates and can only move the servos
-to a specified point.  A later version will accept angular rate
-data and move all the servos at the specified rate.
-This should allow less frequent position updates from the
-linux computer.
 
 I may move this software to a Pico-W or ESP32.
 Both of these have WiFi radios that might allow the servos to
