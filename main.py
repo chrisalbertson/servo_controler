@@ -1,7 +1,9 @@
 # Servo Controller to run in a microcontroller
 
+import micropython
 from machine import Pin
 import utime
+import json
 import servo_driver
 
 ## TODO take comments of the numpy import
@@ -12,12 +14,28 @@ except ImportError:
     import numpy as np
 """
 
+version_id = micropython.const("Servo Controller, Version 0.1")
 
+# level 0, assertions are compiled in.  Set to 1 to compile out
+micropython.opt_level(0)
+
+# save some bytes for processing the "out of memory exception
+micropython.alloc_emergency_exception_buf(100)
+
+# global instance of servo driver
+sd = servo_driver.ServoDriver()
 
 def get_next_command():
     """returns a full command or None"""
+
+    # TODO Ths needs to come over a different interface
     line = input('$$$')
-    command = eval(line)
+    try:
+        command = json.loads(line)
+    except:
+        print('ERROR. json.load() failed')
+        command = None
+
     return command
 
 
@@ -37,8 +55,6 @@ def exec_command(command):
     global version_id
     global sd
 
-    command = get_next_command()
-    print('      got', command)
     op = command[0]
 
     if op == 'none':
@@ -47,14 +63,26 @@ def exec_command(command):
     elif op == 'angle':
         sd.set_angles(command[1])
 
+    elif op == 'rate':
+        sd.set_rate(command[1])
+
     elif op == 'cal':
         sd.set_calibration(command[1], command[2])
+
+    elif op == 'cal':
+        sd.set_us_limits(command[1], command[2])
+
+    elif op == 'channel_active':
+        sd.set_channel_active(command[1])
 
     elif op == 'start':
         sd.start()
 
     elif op == 'stop':
         sd.stop()
+
+    elif op == 'zero':
+        sd.zero_all()
 
     elif op == 'echo':
         print('>>>' + str(command) + '<<<')
@@ -66,21 +94,22 @@ def exec_command(command):
         pass
 
 
-def past_ms(tickval_ms: _Ticks):
+@micropython.native
+def past_ms(tickval_ms) -> bool:
 
     delta = utime.ticks_diff(utime.ticks_ms(), tickval_ms)
-    if delta < 0:
+    if delta > 0:
         return True
     else:
         return False
 
 
 def main():
-    print('test 4')
+    """ Entry point to servo controller. """
 
     led = Pin(25, Pin.OUT)
-    command_poll_period = 10    # ms
-    heartbeat_period = 2000     # ms
+    command_poll_period = micropython.const(10)     # ms
+    heartbeat_period    = micropython.const(2000)   # ms
 
 
 
@@ -95,6 +124,9 @@ def main():
         led.off()
         utime.sleep_ms(600)
 
+    # TODO TEST ONLY REMOVE LATER
+    advance_next = utime.ticks_ms()
+
     while True:
 
         if past_ms(heartbeat_next):
@@ -106,21 +138,18 @@ def main():
         if past_ms(heartbeat_off):
             led.off()
 
+        # TODO TEST ONLY REMOVE LATER
+        if past_ms(advance_next):
+            sd.advance()
+            advance_next = utime.ticks_add(utime.ticks_ms(),
+                                           1000)
+
         command = get_next_command()
         if command is not None:
             exec_command(command)
 
+        # TODO place call to WDT.feed() here
         utime.sleep_ms(command_poll_period)
 
-
-"""
-def example_sender()
-    command = ('angle', [2000, 2300, 900, 1450])
-    command_str = str(command)
-    stream.write(command_str + '\n')
-"""
-
-version_id = "Servo Controller, Version 0.0"
-sd = servo_driver.ServoDriver()
 
 main()
